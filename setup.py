@@ -4,9 +4,9 @@ from setuptools import setup, find_packages
 
 
 setup(
-    name='Akdanda Nova Extensions',
+    name='akanda-nova',
     version='0.1.0',
-    description='OpenStack L3 User-Facing REST API',
+    description='OpenStack L3 User-Facing REST API for Nova',
     author='DreamHost',
     author_email='dev-community@dreamhost.com',
     url='http://github.com/dreamhost/akanda',
