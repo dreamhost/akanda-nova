@@ -10,6 +10,8 @@ class LibvirtDriver(driver.LibvirtDriver):
                                                             rescue,
                                                             block_device_info)
 
+        image_meta = image_meta or {}
+
         if image_meta.get('properties', {}).get('nic_model') == 'e1000':
             for device in guest.devices:
                 if isinstance(device, config.LibvirtConfigGuestInterface):
