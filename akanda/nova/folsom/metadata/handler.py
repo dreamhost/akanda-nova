@@ -43,11 +43,11 @@ metadata_proxy_opts = [
         'service_quantum_metadata_proxy',
         default=False,
         help='Set flag to indicate Quantum will proxy metadata requests and '
-             'resolve instance ids.'),
-     cfg.StrOpt(
-         'quantum_metadata_proxy_shared_secret',
-         default='',
-         help='Shared secret to validate proxies Quantum metadata requests')
+        'resolve instance ids.'),
+    cfg.StrOpt(
+        'quantum_metadata_proxy_shared_secret',
+        default='',
+        help='Shared secret to validate proxies Quantum metadata requests')
 ]
 
 FLAGS.register_opts(metadata_proxy_opts)

@@ -41,7 +41,7 @@ metadata_opts = [
                         '2007-12-15 2008-02-01 2008-09-01'),
                help=('List of metadata versions to skip placing into the '
                      'config drive')),
-    ]
+]
 
 FLAGS = flags.FLAGS
 flags.DECLARE('dhcp_domain', 'nova.network.manager')
@@ -99,14 +99,14 @@ class InstanceMetadata():
         ctxt = context.get_admin_context()
 
         services = db.service_get_all_by_host(ctxt.elevated(),
-                instance['host'])
+                                              instance['host'])
         self.availability_zone = ec2utils.get_availability_zone_by_host(
-                services, instance['host'])
+            services, instance['host'])
 
         self.ip_info = ec2utils.get_ip_info_for_instance(ctxt, instance)
 
-        self.security_groups = db.security_group_get_by_instance(ctxt,
-                                                            instance['id'])
+        self.security_groups = db.security_group_get_by_instance(
+            ctxt, instance['id'])
 
         self.mappings = _format_instance_mapping(ctxt, instance)
 
@@ -119,8 +119,8 @@ class InstanceMetadata():
 
         self.ec2_ids['instance-id'] = ec2utils.id_to_ec2_inst_id(
             instance['uuid'])
-        self.ec2_ids['ami-id'] = ec2utils.glance_id_to_ec2_id(ctxt,
-            instance['image_ref'])
+        self.ec2_ids['ami-id'] = ec2utils.glance_id_to_ec2_id(
+            ctxt, instance['image_ref'])
 
         for image_type in ['kernel', 'ramdisk']:
             if self.instance.get('%s_id' % image_type):
@@ -159,8 +159,10 @@ class InstanceMetadata():
         if cfg:
             key = "%04i" % len(self.content)
             self.content[key] = cfg
-            self.network_config = {"name": "network_config",
-                'content_path': "/%s/%s" % (CONTENT_DIR, key)}
+            self.network_config = {
+                "name": "network_config",
+                'content_path': "/%s/%s" % (CONTENT_DIR, key)
+            }
 
         # 'content' is passed in from the configdrive code in
         # nova/virt/libvirt/driver.py.  Thats how we get the injected files
@@ -169,7 +171,7 @@ class InstanceMetadata():
         for (path, contents) in content:
             key = "%04i" % len(self.content)
             self.files.append({'path': path,
-                'content_path': "/%s/%s" % (CONTENT_DIR, key)})
+                               'content_path': "/%s/%s" % (CONTENT_DIR, key)})
             self.content[key] = contents
 
     def get_ec2_metadata(self, version):
