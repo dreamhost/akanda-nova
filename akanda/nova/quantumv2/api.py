@@ -137,9 +137,8 @@ class API(api.API):
                     quantumv2.get_client(context).delete_port(port['id'])
             except Exception as ex:
                 LOG.exception(_("Failed to delete quantum port %(portid)s ")
-                        % {'portid': port['id']})
+                              % {'portid': port['id']})
         self.trigger_security_group_members_refresh(context, instance)
-
 
     def _build_network_info_model(self, context, instance, networks=None):
         """This is a slightly different version than the super.

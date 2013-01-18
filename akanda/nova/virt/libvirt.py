@@ -1,6 +1,7 @@
 from nova.virt.libvirt import config
 from nova.virt.libvirt import driver
 
+
 class LibvirtDriver(driver.LibvirtDriver):
     def get_guest_config(self, instance, network_info, image_meta, rescue=None,
                          block_device_info=None):
