@@ -173,12 +173,23 @@ class API(api.API):
             network_IPs = [network_model.FixedIP(address=ip_address)
                            for ip_address in [ip['ip_address']
                                               for ip in port['fixed_ips']]]
+
             # TODO(gongysh) get floating_ips for each fixed_ip
 
             subnets = self._get_subnets_from_port(context, port)
             for subnet in subnets:
                 subnet['ips'] = [fixed_ip for fixed_ip in network_IPs
                                  if fixed_ip.is_in_subnet(subnet)]
+
+            #Nova does not like only IPv6, so let's lie and add a fake
+            # link-local IPv4.  Quantum provides DHCP so this is ignored.
+            if not any(ip['version'] == 4 for ip in network_IPs):
+                nova_lie = {
+                    'cidr': '169.254.0.0/16',
+                    'gateway': network_model.IP(address='', type='gateway'),
+                    'ips': [network_model.FixedIP(address='169.254.10.20')]
+                }
+                subnets.append(nova_lie)
 
             network = network_model.Network(
                 id=port['network_id'],
