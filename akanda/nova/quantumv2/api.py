@@ -1,12 +1,12 @@
 from nova import exception
-from nova import flags
+from nova import config
 from nova.network import model as network_model
 from nova.network import quantumv2
 from nova.network.quantumv2 import api
 from nova.openstack.common import excutils
 from nova.openstack.common import log as logging
 
-FLAGS = flags.FLAGS
+CONF = config.CONF
 LOG = api.LOG
 
 
@@ -75,7 +75,7 @@ class API(api.API):
         created_port_ids = []
         for network in nets:
             network_id = network['id']
-            zone = 'compute:%s' % FLAGS.node_availability_zone
+            zone = 'compute:%s' % CONF.node_availability_zone
             port_req_body = {'device_id': instance['uuid']}
             try:
                 port = ports.get(network_id)
@@ -194,7 +194,7 @@ class API(api.API):
             network = network_model.Network(
                 id=port['network_id'],
                 bridge='',  # Quantum ignores this field
-                injected=FLAGS.flat_injected,
+                injected=CONF.flat_injected,
                 label=network_name,
                 tenant_id=net['tenant_id']
             )
