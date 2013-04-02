@@ -15,14 +15,15 @@
 #
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
+from oslo.config import cfg
+
 from nova import exception
-from nova import config
 from nova.openstack.common import excutils
 from nova.openstack.common import log as logging
 from quantumclient import client
 from quantumclient.v2_0 import client as clientv20
 
-CONF = config.CONF
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 

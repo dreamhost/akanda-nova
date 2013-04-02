@@ -1,12 +1,14 @@
+
+from oslo.config import cfg
+
 from nova import exception
-from nova import config
 from nova.network import model as network_model
 from nova.network import quantumv2
 from nova.network.quantumv2 import api
 from nova.openstack.common import excutils
 from nova.openstack.common import log as logging
 
-CONF = config.CONF
+CONF = cfg.CONF
 LOG = api.LOG
 
 
