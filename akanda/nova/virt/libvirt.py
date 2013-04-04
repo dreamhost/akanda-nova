@@ -3,11 +3,12 @@ from nova.virt.libvirt import driver
 
 
 class LibvirtDriver(driver.LibvirtDriver):
-    def get_guest_config(self, instance, network_info, image_meta, rescue=None,
-                         block_device_info=None):
+    def get_guest_config(self, instance, network_info, image_meta, disk_info,
+                         rescue=None, block_device_info=None):
         guest = super(LibvirtDriver, self).get_guest_config(instance,
                                                             network_info,
                                                             image_meta,
+                                                            disk_info,
                                                             rescue,
                                                             block_device_info)
 

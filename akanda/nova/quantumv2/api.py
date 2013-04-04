@@ -77,7 +77,7 @@ class API(api.API):
         created_port_ids = []
         for network in nets:
             network_id = network['id']
-            zone = 'compute:%s' % CONF.node_availability_zone
+            zone = 'compute:%s' % CONF.default_availability_zone
             port_req_body = {'device_id': instance['uuid']}
             try:
                 port = ports.get(network_id)
