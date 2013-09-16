@@ -4,8 +4,8 @@ from oslo.config import cfg
 from nova import exception
 from nova.network import api as network_api
 from nova.network import model as network_model
-from nova.network import quantumv2
-from nova.network.quantumv2 import api
+from nova.network import neutronv2
+from nova.network.neutronv2 import api
 from nova.openstack.common import excutils
 from nova.openstack.common import log as logging
 
@@ -17,12 +17,12 @@ class API(api.API):
     def _get_available_networks(self, context, project_id, net_ids=None):
         """Return a list of available networks for the tenant.
 
-        This version is more permissive and allows the quantum service user
-        to see more networks by relying on Quantum to properly
+        This version is more permissive and allows the neutron service user
+        to see more networks by relying on Neutron to properly
         filter the networks.
         """
         if ((context.project_name == 'service' and
-             context.user_name == 'quantum')):
+             context.user_name == 'neutron')):
             f = self._akanda_available_networks
         else:
             f = super(API, self)._get_available_networks
@@ -37,13 +37,13 @@ class API(api.API):
         return nets
 
     def _akanda_available_networks(self, context, project_id, net_ids=None):
-        quantum = quantumv2.get_client(context)
+        neutron = neutronv2.get_client(context)
 
         search_opts = {}
 
         if net_ids:
             search_opts['id'] = net_ids
-        return quantum.list_networks(**search_opts).get('networks', [])
+        return neutron.list_networks(**search_opts).get('networks', [])
 
     @network_api.refresh_cache
     def allocate_for_instance(self, context, instance, **kwargs):
@@ -60,7 +60,7 @@ class API(api.API):
             # to create a port on a network. If we find a mac with a
             # pre-allocated port we also remove it from this set.
             available_macs = set(hypervisor_macs)
-        quantum = quantumv2.get_client(context)
+        neutron = neutronv2.get_client(context)
         LOG.debug(_('allocate_for_instance() for %s'),
                   instance['display_name'])
         if not instance['project_id']:
@@ -74,7 +74,7 @@ class API(api.API):
         if requested_networks:
             for network_id, fixed_ip, port_id in requested_networks:
                 if port_id:
-                    port = quantum.show_port(port_id)['port']
+                    port = neutron.show_port(port_id)['port']
                     if hypervisor_macs is not None:
                         if port['mac_address'] not in hypervisor_macs:
                             raise exception.PortNotUsable(
@@ -102,7 +102,7 @@ class API(api.API):
         # group if len(security_groups) == 1
         if len(security_groups):
             search_opts = {'tenant_id': instance['project_id']}
-            user_security_groups = quantum.list_security_groups(
+            user_security_groups = neutron.list_security_groups(
                 **search_opts).get('security_groups')
 
         for security_group in security_groups:
@@ -153,7 +153,7 @@ class API(api.API):
                 if port:
                     if not port['device_owner'].startswith('network:'):
                         port_req_body['port']['device_owner'] = zone
-                    quantum.update_port(port['id'], port_req_body)
+                    neutron.update_port(port['id'], port_req_body)
                     touched_port_ids.append(port['id'])
                 else:
                     fixed_ip = fixed_ips.get(network_id)
@@ -174,22 +174,22 @@ class API(api.API):
                                 instance=instance['display_name'])
                             mac_address = available_macs.pop()
                             port_req_body['port']['mac_address'] = mac_address
-                    self._populate_quantum_extension_values(instance,
+                    self._populate_neutron_extension_values(instance,
                                                             port_req_body)
                     created_port_ids.append(
-                        quantum.create_port(port_req_body)['port']['id'])
+                        neutron.create_port(port_req_body)['port']['id'])
             except Exception as e:
                 with excutils.save_and_reraise_exception():
                     for port_id in touched_port_ids:
-                        port_in_server = quantum.show_port(port_id).get('port')
+                        port_in_server = neutron.show_port(port_id).get('port')
                         if not port_in_server:
                             raise Exception('Port have already lost')
                         port_req_body = {'port': {'device_id': None}}
-                        quantum.update_port(port_id, port_req_body)
+                        neutron.update_port(port_id, port_req_body)
 
                     for port_id in created_port_ids:
                         try:
-                            quantum.delete_port(port_id)
+                            neutron.delete_port(port_id)
                         except Exception as ex:
                             msg = _("Fail to delete port %(portid)s with"
                                     " failure: %(exception)s")
@@ -218,18 +218,18 @@ class API(api.API):
         LOG.debug(_('deallocate_for_instance() for %s'),
                   instance['display_name'])
         search_opts = {'device_id': instance['uuid']}
-        data = quantumv2.get_client(context).list_ports(**search_opts)
+        data = neutronv2.get_client(context).list_ports(**search_opts)
         ports = data.get('ports', [])
         for port in ports:
             try:
                 if port['device_owner'].startswith('network:'):
                     body = dict(device_id='')
-                    quantumv2.get_client(context).update_port(
+                    neutronv2.get_client(context).update_port(
                         port['id'], dict(port=body))
                 else:
-                    quantumv2.get_client(context).delete_port(port['id'])
+                    neutronv2.get_client(context).delete_port(port['id'])
             except Exception as ex:
-                LOG.exception(_("Failed to delete quantum port %(portid)s ")
+                LOG.exception(_("Failed to delete neutron port %(portid)s ")
                               % {'portid': port['id']})
         self.trigger_security_group_members_refresh(context, instance)
         self.trigger_instance_remove_security_group_refresh(context, instance)
@@ -242,10 +242,10 @@ class API(api.API):
         """
         search_opts = {'device_id': instance['uuid']}
 
-        if context.project_name != 'service' or context.user_name != 'quantum':
+        if context.project_name != 'service' or context.user_name != 'neutron':
             search_opts['tenant_id'] = instance['project_id']
 
-        client = quantumv2.get_client(context, admin=True)
+        client = neutronv2.get_client(context, admin=True)
         data = client.list_ports(**search_opts)
         ports = data.get('ports', [])
         if networks is None:
@@ -289,7 +289,7 @@ class API(api.API):
                                  if fixed_ip.is_in_subnet(subnet)]
 
             #Nova does not like only IPv6, so let's lie and add a fake
-            # link-local IPv4.  Quantum provides DHCP so this is ignored.
+            # link-local IPv4.  Neutron provides DHCP so this is ignored.
             if not any(ip['version'] == 4 for ip in network_IPs):
                 nova_lie = {
                     'cidr': '169.254.0.0/16',
@@ -303,10 +303,10 @@ class API(api.API):
             # Network model metadata
             should_create_bridge = None
             vif_type = port.get('binding:vif_type')
-            # TODO(berrange) Quantum should pass the bridge name
+            # TODO(berrange) Neutron should pass the bridge name
             # in another binding metadata field
             if vif_type == network_model.VIF_TYPE_OVS:
-                bridge = CONF.quantum_ovs_bridge
+                bridge = CONF.neutron_ovs_bridge
                 ovs_interfaceid = port['id']
             elif vif_type == network_model.VIF_TYPE_BRIDGE:
                 bridge = "brq" + port['network_id']

@@ -20,8 +20,8 @@ from oslo.config import cfg
 from nova import exception
 from nova.openstack.common import excutils
 from nova.openstack.common import log as logging
-from quantumclient import client
-from quantumclient.v2_0 import client as clientv20
+from neutronclient import client
+from neutronclient.v2_0 import client as clientv20
 
 CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
@@ -30,12 +30,12 @@ LOG = logging.getLogger(__name__)
 def _get_auth_token():
     try:
         httpclient = client.HTTPClient(
-            username=CONF.quantum_admin_username,
-            tenant_name=CONF.quantum_admin_tenant_name,
-            password=CONF.quantum_admin_password,
-            auth_url=CONF.quantum_admin_auth_url,
-            timeout=CONF.quantum_url_timeout,
-            auth_strategy=CONF.quantum_auth_strategy)
+            username=CONF.neutron_admin_username,
+            tenant_name=CONF.neutron_admin_tenant_name,
+            password=CONF.neutron_admin_password,
+            auth_url=CONF.neutron_admin_auth_url,
+            timeout=CONF.neutron_url_timeout,
+            auth_strategy=CONF.neutron_auth_strategy)
         httpclient.authenticate()
     except Exception:
         with excutils.save_and_reraise_exception():
@@ -46,14 +46,14 @@ def _get_auth_token():
 def get_client(context):
     token = context.auth_token
     if not token:
-        if CONF.quantum_auth_strategy:
+        if CONF.neutron_auth_strategy:
             token = _get_auth_token()
     if token:
         my_client = clientv20.Client(
-            endpoint_url=CONF.quantum_url,
-            token=token, timeout=CONF.quantum_url_timeout)
+            endpoint_url=CONF.neutron_url,
+            token=token, timeout=CONF.neutron_url_timeout)
     else:
         my_client = clientv20.Client(
-            endpoint_url=CONF.quantum_url,
-            auth_strategy=None, timeout=CONF.quantum_url_timeout)
+            endpoint_url=CONF.neutron_url,
+            auth_strategy=None, timeout=CONF.neutron_url_timeout)
     return my_client
