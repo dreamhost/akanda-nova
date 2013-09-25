@@ -16,14 +16,32 @@ class API(api.API):
 
     @network_api.refresh_cache
     def allocate_for_instance(self, context, instance, **kwargs):
-        """Allocate all network resources for the instance.
+        """Allocate network resources for the instance.
 
-        This method does not overwrite the device_owner attribute if it
-        begins with network:.  This change is the only difference from the
-        parent method.
+        :param requested_networks: optional value containing
+            network_id, fixed_ip, and port_id
+        :param security_groups: security groups to allocate for instance
+        :param macs: None or a set of MAC addresses that the instance
+            should use. macs is supplied by the hypervisor driver (contrast
+            with requested_networks which is user supplied).
+            NB: NeutronV2 currently assigns hypervisor supplied MAC addresses
+            to arbitrary networks, which requires openflow switches to
+            function correctly if more than one network is being used with
+            the bare metal hypervisor (which is the only one known to limit
+            MAC addresses).
+        :param dhcp_options: None or a set of key/value pairs that should
+            determine the DHCP BOOTP response, eg. for PXE booting an instance
+            configured with the baremetal hypervisor. It is expected that these
+            are already formatted for the quantum v2 api.
+            See nova/virt/driver.py:dhcp_options_for_instance for an example.
+
+        NOTE: This method does not overwrite the device_owner attribute if it
+              begins with "network:".  This change is the only difference from
+              the parent method.
         """
         hypervisor_macs = kwargs.get('macs', None)
         available_macs = None
+        dhcp_opts = None
         if hypervisor_macs is not None:
             # Make a copy we can mutate: records macs that have not been used
             # to create a port on a network. If we find a mac with a
@@ -37,6 +55,10 @@ class API(api.API):
             raise exception.InvalidInput(
                 reason=msg % instance['display_name'])
         requested_networks = kwargs.get('requested_networks')
+        # Note: (dkehn) this option check should be removed as soon as support
+        # in neutron released, see https://bugs.launchpad.net/nova/+bug/1214162
+        if CONF.dhcp_options_enabled:
+            dhcp_opts = kwargs.get('dhcp_options', None)
         ports = {}
         fixed_ips = {}
         net_ids = []
@@ -44,11 +66,14 @@ class API(api.API):
             for network_id, fixed_ip, port_id in requested_networks:
                 if port_id:
                     port = neutron.show_port(port_id)['port']
+                    if port.get('device_id'):
+                        raise exception.PortInUse(port_id=port_id)
                     if hypervisor_macs is not None:
                         if port['mac_address'] not in hypervisor_macs:
                             raise exception.PortNotUsable(
                                 port_id=port_id,
-                                instance=instance['display_name'])
+                                instance=instance['display_name']
+                            )
                         else:
                             # Don't try to use this MAC if we need to create a
                             # port on the fly later. Identical MACs may be
@@ -64,6 +89,11 @@ class API(api.API):
 
         nets = self._get_available_networks(context, instance['project_id'],
                                             net_ids)
+
+        if not nets:
+            LOG.warn(_("No network configured!"), instance=instance)
+            return []
+
         security_groups = kwargs.get('security_groups', [])
         security_group_ids = []
 
@@ -93,7 +123,6 @@ class API(api.API):
             if not name_match and not uuid_match:
                 raise exception.SecurityGroupNotFound(
                     security_group_id=security_group)
-                security_group_ids.append(name_match)
             elif name_match:
                 security_group_ids.append(name_match)
             elif uuid_match:
@@ -111,62 +140,57 @@ class API(api.API):
             if (security_groups and not (
                     network['subnets']
                     and network.get('port_security_enabled', True))):
+
                 raise exception.SecurityGroupCannotBeApplied()
             network_id = network['id']
-            zone = 'compute:%s' % CONF.default_availability_zone
-
-            port_req_body = {'port': {'device_id': instance['uuid']}}
-
+            zone = 'compute:%s' % instance['availability_zone']
+            port_req_body = {'port': {'device_id': instance['uuid'],
+                                      'device_owner': zone}}
             try:
                 port = ports.get(network_id)
+                self._populate_neutron_extension_values(instance,
+                                                        port_req_body)
+                # Requires admin creds to set port bindings
+                port_client = (neutron if not
+                               self._has_port_binding_extension() else
+                               neutronv2.get_client(context, admin=True))
                 if port:
+                    # NOTE(rods): Add the following two lines is the only
+                    #             change from the parent method
                     if not port['device_owner'].startswith('network:'):
                         port_req_body['port']['device_owner'] = zone
-                    neutron.update_port(port['id'], port_req_body)
+                    port_client.update_port(port['id'], port_req_body)
                     touched_port_ids.append(port['id'])
                 else:
-                    fixed_ip = fixed_ips.get(network_id)
-                    if fixed_ip:
-                        port_req_body['port']['fixed_ips'] = [
-                            {'ip_address': fixed_ip}
-                        ]
-                    port_req_body['port']['network_id'] = network_id
-                    port_req_body['port']['admin_state_up'] = True
-                    port_req_body['port']['tenant_id'] = instance['project_id']
-                    port_req_body['port']['device_owner'] = zone
-                    if security_group_ids:
-                        port_req_body['port']['security_groups'] = (
-                            security_group_ids)
-                    if available_macs is not None:
-                        if not available_macs:
-                            raise exception.PortNotFree(
-                                instance=instance['display_name'])
-                            mac_address = available_macs.pop()
-                            port_req_body['port']['mac_address'] = mac_address
-                    self._populate_neutron_extension_values(instance,
-                                                            port_req_body)
                     created_port_ids.append(
-                        neutron.create_port(port_req_body)['port']['id'])
-            except Exception as e:
+                        self._create_port(
+                            port_client, instance, network_id,
+                            port_req_body, fixed_ips.get(network_id),
+                            security_group_ids, available_macs, dhcp_opts)
+                    )
+            except Exception:
                 with excutils.save_and_reraise_exception():
                     for port_id in touched_port_ids:
-                        port_in_server = neutron.show_port(port_id).get('port')
-                        if not port_in_server:
-                            raise Exception('Port have already lost')
-                        port_req_body = {'port': {'device_id': None}}
-                        neutron.update_port(port_id, port_req_body)
+                        try:
+                            port_req_body = {'port': {'device_id': None}}
+                            # Requires admin creds to set port bindings
+                            if self._has_port_binding_extension():
+                                port_req_body['port']['binding:host_id'] = None
+                                port_client = neutronv2.get_client(
+                                    context, admin=True)
+                            else:
+                                port_client = neutron
+                            port_client.update_port(port_id, port_req_body)
+                        except Exception:
+                            msg = _("Failed to update port %s")
+                            LOG.exception(msg, port_id)
 
                     for port_id in created_port_ids:
                         try:
                             neutron.delete_port(port_id)
-                        except Exception as ex:
-                            msg = _("Fail to delete port %(portid)s with"
-                                    " failure: %(exception)s")
-                            LOG.debug(msg, {'portid': port_id,
-                                            'exception': ex})
-
-        self.trigger_security_group_members_refresh(context, instance)
-        self.trigger_instance_add_security_group_refresh(context, instance)
+                        except Exception:
+                            msg = _("Failed to delete port %s")
+                            LOG.exception(msg, port_id)
 
         nw_info = self._get_instance_nw_info(context, instance, networks=nets)
         # NOTE(danms): Only return info about ports we created in this run.
@@ -174,9 +198,9 @@ class API(api.API):
         # and in later runs will only be what was created that time. Thus,
         # this only affects the attach case, not the original use for this
         # method.
-        return network_model.NetworkInfo([
-            port for port in nw_info
-            if port['id'] in created_port_ids + touched_port_ids])
+        return network_model.NetworkInfo([port for port in nw_info
+                                          if port['id'] in created_port_ids +
+                                          touched_port_ids])
 
     def deallocate_for_instance(self, context, instance, **kwargs):
         """Deallocate all network resources related to the instance.
