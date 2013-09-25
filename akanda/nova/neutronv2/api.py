@@ -1,4 +1,3 @@
-
 from oslo.config import cfg
 
 from nova import exception
@@ -14,36 +13,6 @@ LOG = api.LOG
 
 
 class API(api.API):
-    def _get_available_networks(self, context, project_id, net_ids=None):
-        """Return a list of available networks for the tenant.
-
-        This version is more permissive and allows the neutron service user
-        to see more networks by relying on Neutron to properly
-        filter the networks.
-        """
-        if ((context.project_name == 'service' and
-             context.user_name == 'neutron')):
-            f = self._akanda_available_networks
-        else:
-            f = super(API, self)._get_available_networks
-
-        nets = f(context, project_id, net_ids)
-        api._ensure_requested_network_ordering(
-            lambda x: x['id'],
-            nets,
-            net_ids
-        )
-
-        return nets
-
-    def _akanda_available_networks(self, context, project_id, net_ids=None):
-        neutron = neutronv2.get_client(context)
-
-        search_opts = {}
-
-        if net_ids:
-            search_opts['id'] = net_ids
-        return neutron.list_networks(**search_opts).get('networks', [])
 
     @network_api.refresh_cache
     def allocate_for_instance(self, context, instance, **kwargs):
