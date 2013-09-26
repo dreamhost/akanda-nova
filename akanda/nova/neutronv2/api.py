@@ -212,20 +212,26 @@ class API(api.API):
                   instance['display_name'])
         search_opts = {'device_id': instance['uuid']}
         data = neutronv2.get_client(context).list_ports(**search_opts)
-        ports = data.get('ports', [])
+        ports = [port['id'] for port in data.get('ports', [])]
+
+        requested_networks = kwargs.get('requested_networks') or {}
+        ports_to_skip = [port_id for nets, fips, port_id in requested_networks]
+        ports = set(ports) - set(ports_to_skip)
+
         for port in ports:
             try:
-                if port['device_owner'].startswith('network:'):
+                # NOTE(rods): The following 'if' statement is the only
+                #             difference with the parent method
+                _port = data['ports']['port']
+                if _port['device_owner'].startswith('network:'):
                     body = dict(device_id='')
                     neutronv2.get_client(context).update_port(
                         port['id'], dict(port=body))
                 else:
-                    neutronv2.get_client(context).delete_port(port['id'])
-            except Exception as ex:
-                LOG.exception(_("Failed to delete neutron port %(portid)s ")
-                              % {'portid': port['id']})
-        self.trigger_security_group_members_refresh(context, instance)
-        self.trigger_instance_remove_security_group_refresh(context, instance)
+                    neutronv2.get_client(context).delete_port(port)
+            except Exception:
+                LOG.exception(_("Failed to delete neutron port %(portid)s")
+                              % {'portid': port})
 
     def _build_network_info_model(self, context, instance, networks=None):
         """This is a slightly different version than the super.
