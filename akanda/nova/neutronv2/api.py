@@ -6,7 +6,6 @@ from nova.network import model as network_model
 from nova.network import neutronv2
 from nova.network.neutronv2 import api
 from nova.openstack.common import excutils
-from nova.openstack.common import log as logging
 from nova.openstack.common import jsonutils
 
 CONF = cfg.CONF
