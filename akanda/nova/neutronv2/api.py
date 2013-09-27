@@ -6,7 +6,7 @@ from nova.network import model as network_model
 from nova.network import neutronv2
 from nova.network.neutronv2 import api
 from nova.openstack.common import excutils
-from nova.openstack.common import log as logging
+from nova.openstack.common import jsonutils
 
 CONF = cfg.CONF
 LOG = api.LOG
@@ -236,11 +236,12 @@ class API(api.API):
     def _build_network_info_model(self, context, instance, networks=None):
         """This is a slightly different version than the super.
 
-        Adds support to relax the filters for the service tenant. Additionally,
-        attempts are made to preserve network ordering.
+        Adds support to relax the filters for the service tenant.
+        Workaround the fact that nova doesn't like ipv6 subnet only
         """
         search_opts = {'device_id': instance['uuid']}
-
+        #NOTE(rods): The following "if" statement is not present in the
+        #            parent method.
         if context.project_name != 'service' or context.user_name != 'neutron':
             search_opts['tenant_id'] = instance['project_id']
 
@@ -248,47 +249,30 @@ class API(api.API):
         data = client.list_ports(**search_opts)
         ports = data.get('ports', [])
         if networks is None:
+            # retrieve networks from info_cache to get correct nic order
+            network_cache = self.conductor_api.instance_get_by_uuid(
+                context, instance['uuid'])['info_cache']['network_info']
+            network_cache = jsonutils.loads(network_cache)
+            net_ids = [iface['network']['id'] for iface in network_cache]
             networks = self._get_available_networks(context,
                                                     instance['project_id'])
+
+        # ensure ports are in preferred network order, and filter out
+        # those not attached to one of the provided list of networks
         else:
-            # ensure ports are in preferred network order
-            api._ensure_requested_network_ordering(
-                lambda x: x['network_id'],
-                ports,
-                [n['id'] for n in networks])
+            net_ids = [n['id'] for n in networks]
+        ports = [port for port in ports if port['network_id'] in net_ids]
+        api._ensure_requested_network_ordering(lambda x: x['network_id'],
+                                               ports, net_ids)
 
         nw_info = network_model.NetworkInfo()
         for port in ports:
-            network_name = None
-            for net in networks:
-                if port['network_id'] == net['id']:
-                    network_name = net['name']
-                    break
-
-            if network_name is None:
-                raise exception.NotFound(_('Network %(net)s for '
-                                           'port %(port_id)s not found!') %
-                                         {'net': port['network_id'],
-                                          'port': port['id']})
-
-            network_IPs = []
-            for fixed_ip in port['fixed_ips']:
-                fixed = network_model.FixedIP(address=fixed_ip['ip_address'])
-                floats = self._get_floating_ips_by_fixed_and_port(
-                    client, fixed_ip['ip_address'], port['id'])
-                for ip in floats:
-                    fip = network_model.IP(address=ip['floating_ip_address'],
-                                           type='floating')
-                    fixed.add_floating_ip(fip)
-                network_IPs.append(fixed)
-
-            subnets = self._get_subnets_from_port(context, port)
-            for subnet in subnets:
-                subnet['ips'] = [fixed_ip for fixed_ip in network_IPs
-                                 if fixed_ip.is_in_subnet(subnet)]
+            network_IPs = self._nw_info_get_ips(client, port)
+            subnets = self._nw_info_get_subnets(context, port, network_IPs)
 
             #Nova does not like only IPv6, so let's lie and add a fake
             # link-local IPv4.  Neutron provides DHCP so this is ignored.
+            #NOTE(rods): This workaround is not present in the parent method
             if not any(ip['version'] == 4 for ip in network_IPs):
                 nova_lie = {
                     'cidr': '169.254.0.0/16',
@@ -297,36 +281,13 @@ class API(api.API):
                 }
                 subnets.append(nova_lie)
 
-            bridge = None
-            ovs_interfaceid = None
-            # Network model metadata
-            should_create_bridge = None
-            vif_type = port.get('binding:vif_type')
-            # TODO(berrange) Neutron should pass the bridge name
-            # in another binding metadata field
-            if vif_type == network_model.VIF_TYPE_OVS:
-                bridge = CONF.neutron_ovs_bridge
-                ovs_interfaceid = port['id']
-            elif vif_type == network_model.VIF_TYPE_BRIDGE:
-                bridge = "brq" + port['network_id']
-                should_create_bridge = True
-
-            if bridge is not None:
-                bridge = bridge[:network_model.NIC_NAME_LEN]
-
             devname = "tap" + port['id']
             devname = devname[:network_model.NIC_NAME_LEN]
 
-            network = network_model.Network(
-                id=port['network_id'],
-                bridge=bridge,
-                injected=CONF.flat_injected,
-                label=network_name,
-                tenant_id=net['tenant_id']
-            )
-            network['subnets'] = subnets
-            if should_create_bridge is not None:
-                network['should_create_bridge'] = should_create_bridge
+            network, ovs_interfaceid = self._nw_info_build_network(port,
+                                                                   networks,
+                                                                   subnets)
+
             nw_info.append(network_model.VIF(
                 id=port['id'],
                 address=port['mac_address'],
