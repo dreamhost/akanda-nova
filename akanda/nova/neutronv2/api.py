@@ -258,7 +258,8 @@ class API(api.API):
             network_cache = jsonutils.loads(network_cache)
             net_ids = [iface['network']['id'] for iface in network_cache]
             networks = self._get_available_networks(context,
-                                                    instance['project_id'])
+                                                    instance['project_id'],
+                                                    net_ids)  # akanda change
 
         # ensure ports are in preferred network order, and filter out
         # those not attached to one of the provided list of networks
