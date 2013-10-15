@@ -6,6 +6,7 @@ from nova.network import model as network_model
 from nova.network import neutronv2
 from nova.network.neutronv2 import api
 from nova.openstack.common import excutils
+from nova.openstack.common.gettextutils import _
 from nova.openstack.common import jsonutils
 
 CONF = cfg.CONF
@@ -144,8 +145,9 @@ class API(api.API):
                 raise exception.SecurityGroupCannotBeApplied()
             network_id = network['id']
             zone = 'compute:%s' % instance['availability_zone']
-            port_req_body = {'port': {'device_id': instance['uuid'],
-                                      'device_owner': zone}}
+
+            # NOTE(mark): This is one of the changes from the original
+            port_req_body = {'port': {'device_id': instance['uuid']}}
             try:
                 port = ports.get(network_id)
                 self._populate_neutron_extension_values(instance,
@@ -155,8 +157,7 @@ class API(api.API):
                                self._has_port_binding_extension() else
                                neutronv2.get_client(context, admin=True))
                 if port:
-                    # NOTE(rods): Add the following two lines is the only
-                    #             change from the parent method
+                    # NOTE(mark): This is one of the changes from the original
                     if not port['device_owner'].startswith('network:'):
                         port_req_body['port']['device_owner'] = zone
                     port_client.update_port(port['id'], port_req_body)
@@ -210,20 +211,22 @@ class API(api.API):
         """
         LOG.debug(_('deallocate_for_instance() for %s'),
                   instance['display_name'])
-        search_opts = {'device_id': instance['uuid']}
-        data = neutronv2.get_client(context).list_ports(**search_opts)
-        ports = [port['id'] for port in data.get('ports', [])]
 
         requested_networks = kwargs.get('requested_networks') or {}
         ports_to_skip = [port_id for nets, fips, port_id in requested_networks]
-        ports = set(ports) - set(ports_to_skip)
+
+        search_opts = {'device_id': instance['uuid']}
+        data = neutronv2.get_client(context).list_ports(**search_opts)
+
+        ports = data.get('ports', [])
 
         for port in ports:
+            if port['id'] in ports_to_skip:
+                continue
             try:
                 # NOTE(rods): The following 'if' statement is the only
                 #             difference with the parent method
-                _port = data['ports']['port']
-                if _port['device_owner'].startswith('network:'):
+                if port['device_owner'].startswith('network:'):
                     body = dict(device_id='')
                     neutronv2.get_client(context).update_port(
                         port['id'], dict(port=body))
