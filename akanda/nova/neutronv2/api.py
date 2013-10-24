@@ -231,10 +231,10 @@ class API(api.API):
                     neutronv2.get_client(context).update_port(
                         port['id'], dict(port=body))
                 else:
-                    neutronv2.get_client(context).delete_port(port)
+                    neutronv2.get_client(context).delete_port(port['id'])
             except Exception:
                 LOG.exception(_("Failed to delete neutron port %(portid)s")
-                              % {'portid': port})
+                              % {'portid': port['id']})
 
     def _build_network_info_model(self, context, instance, networks=None):
         """This is a slightly different version than the super.
