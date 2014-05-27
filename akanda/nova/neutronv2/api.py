@@ -1,3 +1,20 @@
+# Copyright 2014 DreamHost, LLC
+#
+# Author: DreamHost, LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
+
+
 from oslo.config import cfg
 
 from nova import exception
@@ -199,8 +216,8 @@ class API(api.API):
         # and in later runs will only be what was created that time. Thus,
         # this only affects the attach case, not the original use for this
         # method.
-        return network_model.NetworkInfo([port for port in nw_info
-                                          if port['id'] in created_port_ids +
+        return network_model.NetworkInfo([p for p in nw_info
+                                          if p['id'] in created_port_ids +
                                           touched_port_ids])
 
     def deallocate_for_instance(self, context, instance, **kwargs):
@@ -243,7 +260,7 @@ class API(api.API):
         Workaround the fact that nova doesn't like ipv6 subnet only
         """
         search_opts = {'device_id': instance['uuid']}
-        #NOTE(rods): The following "if" statement is not present in the
+        # NOTE(rods): The following "if" statement is not present in the
         #            parent method.
         if context.project_name != 'service' or context.user_name != 'neutron':
             search_opts['tenant_id'] = instance['project_id']
@@ -274,9 +291,9 @@ class API(api.API):
             network_IPs = self._nw_info_get_ips(client, port)
             subnets = self._nw_info_get_subnets(context, port, network_IPs)
 
-            #Nova does not like only IPv6, so let's lie and add a fake
+            # Nova does not like only IPv6, so let's lie and add a fake
             # link-local IPv4.  Neutron provides DHCP so this is ignored.
-            #NOTE(rods): This workaround is not present in the parent method
+            # NOTE(rods): This workaround is not present in the parent method
             if not any(ip['version'] == 4 for ip in network_IPs):
                 nova_lie = {
                     'cidr': '169.254.0.0/16',
