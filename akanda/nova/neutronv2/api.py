@@ -47,11 +47,6 @@ class API(api.API):
             function correctly if more than one network is being used with
             the bare metal hypervisor (which is the only one known to limit
             MAC addresses).
-        :param dhcp_options: None or a set of key/value pairs that should
-            determine the DHCP BOOTP response, eg. for PXE booting an instance
-            configured with the baremetal hypervisor. It is expected that these
-            are already formatted for the quantum v2 api.
-            See nova/virt/driver.py:dhcp_options_for_instance for an example.
 
         NOTE: This method does not overwrite the device_owner attribute if it
               begins with "network:".  This change is the only difference from
