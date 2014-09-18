@@ -158,11 +158,11 @@ class API(api.API):
             port_req_body = {'port': {'device_id': instance['uuid']}}
             try:
                 port = ports.get(network_id)
-                self._populate_neutron_extension_values(instance,
-                                                        port_req_body)
+                self._populate_neutron_extension_values(
+                    context, instance, port_req_body)
                 # Requires admin creds to set port bindings
                 port_client = (neutron if not
-                               self._has_port_binding_extension() else
+                               self._has_port_binding_extension(context) else
                                neutronv2.get_client(context, admin=True))
                 if port:
                     # NOTE(mark): This is one of the changes from the original
@@ -183,7 +183,7 @@ class API(api.API):
                         try:
                             port_req_body = {'port': {'device_id': None}}
                             # Requires admin creds to set port bindings
-                            if self._has_port_binding_extension():
+                            if self._has_port_binding_extension(context):
                                 port_req_body['port']['binding:host_id'] = None
                                 port_client = neutronv2.get_client(
                                     context, admin=True)
@@ -244,7 +244,8 @@ class API(api.API):
                 LOG.exception(_("Failed to delete neutron port %(portid)s")
                               % {'portid': port['id']})
 
-    def _build_network_info_model(self, context, instance, networks=None):
+    def _build_network_info_model(self, context, instance,
+                                  networks=None, port_ids=None):
         """This is a slightly different version than the super.
 
         Adds support to relax the filters for the service tenant.
