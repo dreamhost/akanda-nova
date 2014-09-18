@@ -47,11 +47,6 @@ class API(api.API):
             function correctly if more than one network is being used with
             the bare metal hypervisor (which is the only one known to limit
             MAC addresses).
-        :param dhcp_options: None or a set of key/value pairs that should
-            determine the DHCP BOOTP response, eg. for PXE booting an instance
-            configured with the baremetal hypervisor. It is expected that these
-            are already formatted for the quantum v2 api.
-            See nova/virt/driver.py:dhcp_options_for_instance for an example.
 
         NOTE: This method does not overwrite the device_owner attribute if it
               begins with "network:".  This change is the only difference from
@@ -73,10 +68,6 @@ class API(api.API):
             raise exception.InvalidInput(
                 reason=msg % instance['display_name'])
         requested_networks = kwargs.get('requested_networks')
-        # Note: (dkehn) this option check should be removed as soon as support
-        # in neutron released, see https://bugs.launchpad.net/nova/+bug/1214162
-        if CONF.dhcp_options_enabled:
-            dhcp_opts = kwargs.get('dhcp_options', None)
         ports = {}
         fixed_ips = {}
         net_ids = []
