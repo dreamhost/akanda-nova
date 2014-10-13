@@ -18,7 +18,6 @@
 from oslo.config import cfg
 
 from nova import exception
-from nova.network import api as network_api
 from nova.network import model as network_model
 from nova.network import neutronv2
 from nova.network.neutronv2 import api
@@ -32,7 +31,6 @@ LOG = api.LOG
 
 class API(api.API):
 
-    @network_api.refresh_cache
     def allocate_for_instance(self, context, instance, **kwargs):
         """Allocate network resources for the instance.
 
@@ -47,14 +45,14 @@ class API(api.API):
             function correctly if more than one network is being used with
             the bare metal hypervisor (which is the only one known to limit
             MAC addresses).
-
-        NOTE: This method does not overwrite the device_owner attribute if it
-              begins with "network:".  This change is the only difference from
-              the parent method.
+        :param dhcp_options: None or a set of key/value pairs that should
+            determine the DHCP BOOTP response, eg. for PXE booting an instance
+            configured with the baremetal hypervisor. It is expected that these
+            are already formatted for the neutron v2 api.
+            See nova/virt/driver.py:dhcp_options_for_instance for an example.
         """
         hypervisor_macs = kwargs.get('macs', None)
         available_macs = None
-        dhcp_opts = None
         if hypervisor_macs is not None:
             # Make a copy we can mutate: records macs that have not been used
             # to create a port on a network. If we find a mac with a
@@ -68,6 +66,7 @@ class API(api.API):
             raise exception.InvalidInput(
                 reason=msg % instance['display_name'])
         requested_networks = kwargs.get('requested_networks')
+        dhcp_opts = kwargs.get('dhcp_options', None)
         ports = {}
         fixed_ips = {}
         net_ids = []
@@ -81,8 +80,7 @@ class API(api.API):
                         if port['mac_address'] not in hypervisor_macs:
                             raise exception.PortNotUsable(
                                 port_id=port_id,
-                                instance=instance['display_name']
-                            )
+                                instance=instance['display_name'])
                         else:
                             # Don't try to use this MAC if we need to create a
                             # port on the fly later. Identical MACs may be
@@ -101,7 +99,7 @@ class API(api.API):
 
         if not nets:
             LOG.warn(_("No network configured!"), instance=instance)
-            return []
+            return network_model.NetworkInfo([])
 
         security_groups = kwargs.get('security_groups', [])
         security_group_ids = []
@@ -119,10 +117,11 @@ class API(api.API):
             for user_security_group in user_security_groups:
                 if user_security_group['name'] == security_group:
                     if name_match:
-                        msg = (_("Multiple security groups found matching"
-                                 " '%s'. Use an ID to be more specific."),
-                               security_group)
-                        raise exception.NoUniqueMatch(msg)
+                        raise exception.NoUniqueMatch(
+                            _("Multiple security groups found matching"
+                              " '%s'. Use an ID to be more specific.") %
+                            security_group)
+
                     name_match = user_security_group['id']
                 if user_security_group['id'] == security_group:
                     uuid_match = user_security_group['id']
@@ -139,6 +138,7 @@ class API(api.API):
 
         touched_port_ids = []
         created_port_ids = []
+        ports_in_requested_order = []
         for network in nets:
             # If security groups are requested on an instance then the
             # network must has a subnet associated with it. Some plugins
@@ -153,30 +153,45 @@ class API(api.API):
                 raise exception.SecurityGroupCannotBeApplied()
             network_id = network['id']
             zone = 'compute:%s' % instance['availability_zone']
+            # -----------------------------------------------------------------
+            # NOTE(rods):
+            # This change and the other below are the only differences between
+            # our custom version and the original icehouse upstream method.
+            # For further information about why we need these changes, please
+            # refer to the 'Server Allocation' section of the README.md file.
+            #
+            # original code:
+            # port_req_body = {'port': {'device_id': instance['uuid'],
+            #                  'device_owner': zone}}
 
-            # NOTE(mark): This is one of the changes from the original
             port_req_body = {'port': {'device_id': instance['uuid']}}
+            # -----------------------------------------------------------------
             try:
                 port = ports.get(network_id)
-                self._populate_neutron_extension_values(
-                    context, instance, port_req_body)
+                self._populate_neutron_extension_values(context, instance,
+                                                        port_req_body)
                 # Requires admin creds to set port bindings
                 port_client = (neutron if not
                                self._has_port_binding_extension(context) else
                                neutronv2.get_client(context, admin=True))
                 if port:
-                    # NOTE(mark): This is one of the changes from the original
+                    # ---------------------------------------------------------
+                    # NOTE(rods):
+                    # The following two lines are not present in the original
+                    # icehouse upstream method.
                     if not port['device_owner'].startswith('network:'):
                         port_req_body['port']['device_owner'] = zone
+                    # ---------------------------------------------------------
                     port_client.update_port(port['id'], port_req_body)
                     touched_port_ids.append(port['id'])
+                    ports_in_requested_order.append(port['id'])
                 else:
-                    created_port_ids.append(
-                        self._create_port(
-                            port_client, instance, network_id,
-                            port_req_body, fixed_ips.get(network_id),
-                            security_group_ids, available_macs, dhcp_opts)
-                    )
+                    created_port = self._create_port(
+                        port_client, instance, network_id,
+                        port_req_body, fixed_ips.get(network_id),
+                        security_group_ids, available_macs, dhcp_opts)
+                    created_port_ids.append(created_port)
+                    ports_in_requested_order.append(created_port)
             except Exception:
                 with excutils.save_and_reraise_exception():
                     for port_id in touched_port_ids:
@@ -201,14 +216,15 @@ class API(api.API):
                             msg = _("Failed to delete port %s")
                             LOG.exception(msg, port_id)
 
-        nw_info = self._get_instance_nw_info(context, instance, networks=nets)
+        nw_info = self.get_instance_nw_info(context, instance, networks=nets,
+                                            port_ids=ports_in_requested_order)
         # NOTE(danms): Only return info about ports we created in this run.
         # In the initial allocation case, this will be everything we created,
         # and in later runs will only be what was created that time. Thus,
         # this only affects the attach case, not the original use for this
         # method.
-        return network_model.NetworkInfo([p for p in nw_info
-                                          if p['id'] in created_port_ids +
+        return network_model.NetworkInfo([port for port in nw_info  # noqa
+                                          if port['id'] in created_port_ids +
                                           touched_port_ids])
 
     def deallocate_for_instance(self, context, instance, **kwargs):
