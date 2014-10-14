@@ -18,6 +18,7 @@
 from oslo.config import cfg
 
 from nova import exception
+from nova.network import api as network_api
 from nova.network import model as network_model
 from nova.network import neutronv2
 from nova.network.neutronv2 import api
@@ -27,6 +28,8 @@ from nova.openstack.common import jsonutils
 
 CONF = cfg.CONF
 LOG = api.LOG
+
+update_instance_info_cache = network_api.update_instance_cache_with_nw_info
 
 
 class API(api.API):
@@ -228,37 +231,83 @@ class API(api.API):
                                           touched_port_ids])
 
     def deallocate_for_instance(self, context, instance, **kwargs):
-        """Deallocate all network resources related to the instance.
-
-        This version differs from super class because it will not delete
-        network owned ports.
-        """
+        """Deallocate all network resources related to the instance."""
         LOG.debug(_('deallocate_for_instance() for %s'),
                   instance['display_name'])
+
+        # NOTE(rods):
+        # The original icehouse upstream method works in this way:
+        #   * get the list of all the ports attached to the server
+        #   * create the list of ids of all the ports
+        #   * get the list of ids of all the ports_to_skip
+        #   * create the list of ids of the ports_to_delete, like
+        #     ports = set(ports) - set(ports_to_skip)
+        #   * use the ids in the lists of port_to_skip and port_to_delete to
+        #     update or delete the related ports
+
+        # As explained in the README.md file in the "Server deallocation"
+        # section, to make the Nova driver able to deal with Akanda routers
+        # deletion, we need to set to an empty string the device_owner
+        # attribute for all those ports_to_delete whose device_owner starts
+        # with the network prefix. This force us to work on list of ports
+        # (not port ids as in the original method) and make some changes to
+        # the logic even for a small change like test the value of an
+        # attribute.
+
+        search_opts = {'device_id': instance['uuid']}
+        neutron = neutronv2.get_client(context)
+        data = neutron.list_ports(**search_opts)
 
         requested_networks = kwargs.get('requested_networks') or {}
         ports_to_skip = [port_id for nets, fips, port_id in requested_networks]
 
-        search_opts = {'device_id': instance['uuid']}
-        data = neutronv2.get_client(context).list_ports(**search_opts)
+        # ---------------------------------------------------------------------
+        # NOTE(rods): Need a list of ports instead of port ids
+        #
+        # original code
+        # ports = [port['id'] for port in data.get('ports', [])]
+        # ports = set(ports) - set(ports_to_skip)
 
-        ports = data.get('ports', [])
+        ports = [port for port in data.get('ports', [])
+                 if port['id'] not in ports_to_skip]
+        # ---------------------------------------------------------------------
+
+        # Reset device_id and device_owner for the ports that are skipped
+        for port in ports_to_skip:
+            port_req_body = {'port': {'device_id': '', 'device_owner': ''}}
+            try:
+                neutronv2.get_client(context).update_port(port,
+                                                          port_req_body)
+            except Exception:
+                LOG.info(_('Unable to reset device ID for port %s'), port,
+                         instance=instance)
 
         for port in ports:
-            if port['id'] in ports_to_skip:
-                continue
             try:
-                # NOTE(rods): The following 'if' statement is the only
-                #             difference with the parent method
-                if port['device_owner'].startswith('network:'):
+                # -------------------------------------------------------------
+                # NOTE(rods): check the value of the device_owner
+                device_owner = port['device_owner']
+                port = port['id']
+                if device_owner.startswith('network:'):
                     body = dict(device_id='')
-                    neutronv2.get_client(context).update_port(
-                        port['id'], dict(port=body))
+                    neutron.update_port(port, dict(port=body))
+                    # ---------------------------------------------------------
                 else:
-                    neutronv2.get_client(context).delete_port(port['id'])
-            except Exception:
-                LOG.exception(_("Failed to delete neutron port %(portid)s")
-                              % {'portid': port['id']})
+                    neutron.delete_port(port)
+            except neutronv2.exceptions.NeutronClientException as e:
+                if e.status_code == 404:
+                    LOG.warning(_("Port %s does not exist"), port)
+                else:
+                    with excutils.save_and_reraise_exception():
+                        LOG.exception(_("Failed to delete neutron port %s"),
+                                      port)
+
+        # NOTE(arosen): This clears out the network_cache only if the instance
+        # hasn't already been deleted. This is needed when an instance fails to
+        # launch and is rescheduled onto another compute node. If the instance
+        # has already been deleted this call does nothing.
+        update_instance_info_cache(self, context, instance,
+                                   network_model.NetworkInfo([]))
 
     def _build_network_info_model(self, context, instance,
                                   networks=None, port_ids=None):
