@@ -155,19 +155,8 @@ class API(api.API):
                 raise exception.SecurityGroupCannotBeApplied()
             network_id = network['id']
             zone = 'compute:%s' % instance['availability_zone']
-            # -----------------------------------------------------------------
-            # NOTE(rods):
-            # This change and the other below are the only differences between
-            # our custom version and the original icehouse upstream method.
-            # For further information about why we need these changes, please
-            # refer to the 'Server Allocation' section of the README.md file.
-            #
-            # original code:
-            # port_req_body = {'port': {'device_id': instance['uuid'],
-            #                  'device_owner': zone}}
-
-            port_req_body = {'port': {'device_id': instance['uuid']}}
-            # -----------------------------------------------------------------
+            port_req_body = {'port': {'device_id': instance['uuid'],
+                                      'device_owner': zone}}
             try:
                 port = ports.get(network_id)
                 self._populate_neutron_extension_values(context, instance,
@@ -179,10 +168,15 @@ class API(api.API):
                 if port:
                     # ---------------------------------------------------------
                     # NOTE(rods):
-                    # The following two lines are not present in the original
-                    # icehouse upstream method.
-                    if not port['device_owner'].startswith('network:'):
-                        port_req_body['port']['device_owner'] = zone
+                    # The two line below, which are not present in the original
+                    # icehouse upstream method, represent the only difference
+                    # with our custom version. For further information about
+                    # why we need this change, please refer to the
+                    # 'Server Allocation' section of the README.md file.
+                    #
+
+                    if port['device_owner'].startswith('network:'):
+                        port_req_body['port'].pop('device_owner')
                     # ---------------------------------------------------------
                     port_client.update_port(port['id'], port_req_body)
                     touched_port_ids.append(port['id'])
