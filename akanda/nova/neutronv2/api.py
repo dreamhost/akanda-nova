@@ -24,7 +24,6 @@ from nova.network import neutronv2
 from nova.network.neutronv2 import api
 from nova.openstack.common import excutils
 from nova.openstack.common.gettextutils import _
-from nova.openstack.common import jsonutils
 
 CONF = cfg.CONF
 LOG = api.LOG
@@ -309,68 +308,97 @@ class API(api.API):
         update_instance_info_cache(self, context, instance,
                                    network_model.NetworkInfo([]))
 
-    def _build_network_info_model(self, context, instance,
-                                  networks=None, port_ids=None):
-        """This is a slightly different version than the super.
+    def _build_network_info_model(self, context, instance, networks=None,
+                                  port_ids=None):
+        """Return list of ordered VIFs attached to instance.
 
-        Adds support to relax the filters for the service tenant.
-        Workaround the fact that nova doesn't like ipv6 subnet only
+        :param context - request context.
+        :param instance - instance we are returning network info for.
+        :param networks - List of networks being attached to an instance.
+                          If value is None this value will be populated
+                          from the existing cached value.
+        :param port_ids - List of port_ids that are being attached to an
+                          instance in order of attachment. If value is None
+                          this value will be populated from the existing
+                          cached value.
         """
-        search_opts = {'device_id': instance['uuid']}
-        # NOTE(rods): The following "if" statement is not present in the
-        #            parent method.
-        if context.project_name != 'service' or context.user_name != 'neutron':
-            search_opts['tenant_id'] = instance['project_id']
+
+        search_opts = {'tenant_id': instance['project_id'],
+                       'device_id': instance['uuid'], }
+
+        # ---------------------------------------------------------------------
+        # NOTE(rods):
+        # We need to relax the filter as described in the README.md file in
+        # 'Network info model' section
+        # The following lines are not present in the original icehouse
+        # upstream method.
+
+        if (context.project_name == 'service'
+                and context.user_name == 'neutron'):
+            search_opts.pop('tenant_id')
+        # ---------------------------------------------------------------------
 
         client = neutronv2.get_client(context, admin=True)
         data = client.list_ports(**search_opts)
-        ports = data.get('ports', [])
-        if networks is None:
-            # retrieve networks from info_cache to get correct nic order
-            network_cache = self.conductor_api.instance_get_by_uuid(
-                context, instance['uuid'])['info_cache']['network_info']
-            network_cache = jsonutils.loads(network_cache)
-            net_ids = [iface['network']['id'] for iface in network_cache]
-            networks = self._get_available_networks(context,
-                                                    instance['project_id'],
-                                                    net_ids)  # akanda change
 
-        # ensure ports are in preferred network order, and filter out
-        # those not attached to one of the provided list of networks
-        else:
-            net_ids = [n['id'] for n in networks]
-        ports = [port for port in ports if port['network_id'] in net_ids]
-        api._ensure_requested_network_ordering(lambda x: x['network_id'],
-                                               ports, net_ids)
-
+        current_neutron_ports = data.get('ports', [])
+        networks, port_ids = self._gather_port_ids_and_networks(
+            context, instance, networks, port_ids)
         nw_info = network_model.NetworkInfo()
-        for port in ports:
-            network_IPs = self._nw_info_get_ips(client, port)
-            subnets = self._nw_info_get_subnets(context, port, network_IPs)
 
-            # Nova does not like only IPv6, so let's lie and add a fake
-            # link-local IPv4.  Neutron provides DHCP so this is ignored.
-            # NOTE(rods): This workaround is not present in the parent method
-            if not any(ip['version'] == 4 for ip in network_IPs):
-                nova_lie = {
-                    'cidr': '169.254.0.0/16',
-                    'gateway': network_model.IP(address='', type='gateway'),
-                    'ips': [network_model.FixedIP(address='169.254.10.20')]
-                }
-                subnets.append(nova_lie)
+        current_neutron_port_map = {}
+        for current_neutron_port in current_neutron_ports:
+            current_neutron_port_map[current_neutron_port['id']] = (
+                current_neutron_port)
 
-            devname = "tap" + port['id']
-            devname = devname[:network_model.NIC_NAME_LEN]
+        for port_id in port_ids:
+            current_neutron_port = current_neutron_port_map.get(port_id)
+            if current_neutron_port:
+                vif_active = False
+                if (current_neutron_port['admin_state_up'] is False
+                        or current_neutron_port['status'] == 'ACTIVE'):
+                    vif_active = True
 
-            network, ovs_interfaceid = self._nw_info_build_network(port,
-                                                                   networks,
-                                                                   subnets)
+                network_IPs = self._nw_info_get_ips(client,
+                                                    current_neutron_port)
+                subnets = self._nw_info_get_subnets(context,
+                                                    current_neutron_port,
+                                                    network_IPs)
 
-            nw_info.append(network_model.VIF(
-                id=port['id'],
-                address=port['mac_address'],
-                network=network,
-                type=port.get('binding:vif_type'),
-                ovs_interfaceid=ovs_interfaceid,
-                devname=devname))
+                # -------------------------------------------------------------
+                # NOTE(rods):
+                # Nova Havana doesn't like networks with ipv6 subnets only.
+                # The following lines are not present in the original
+                # icehouse upstream method.
+
+                # TODO(rods):
+                # This may not be a problem with subsequent versions of Nova,
+                # we need to test and possibly remove it.
+                if not any(ip['version'] == 4 for ip in network_IPs):
+                    nova_lie = {
+                        'cidr': '169.254.0.0/16',
+                        'gateway': network_model.IP(
+                            address='', type='gateway'),
+                        'ips': [network_model.FixedIP(address='169.254.10.20')]
+                    }
+                    subnets.append(nova_lie)
+                # -------------------------------------------------------------
+
+                devname = "tap" + current_neutron_port['id']
+                devname = devname[:network_model.NIC_NAME_LEN]
+
+                network, ovs_interfaceid = (
+                    self._nw_info_build_network(current_neutron_port,
+                                                networks, subnets))
+
+                nw_info.append(network_model.VIF(
+                    id=current_neutron_port['id'],
+                    address=current_neutron_port['mac_address'],
+                    network=network,
+                    type=current_neutron_port.get('binding:vif_type'),
+                    details=current_neutron_port.get('binding:vif_details'),
+                    ovs_interfaceid=ovs_interfaceid,
+                    devname=devname,
+                    active=vif_active))
+
         return nw_info
