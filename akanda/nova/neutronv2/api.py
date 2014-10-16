@@ -18,15 +18,17 @@
 from oslo.config import cfg
 
 from nova import exception
+from nova.network import api as network_api
 from nova.network import model as network_model
 from nova.network import neutronv2
 from nova.network.neutronv2 import api
 from nova.openstack.common import excutils
 from nova.openstack.common.gettextutils import _
-from nova.openstack.common import jsonutils
 
 CONF = cfg.CONF
 LOG = api.LOG
+
+update_instance_info_cache = network_api.update_instance_cache_with_nw_info
 
 
 class API(api.API):
@@ -153,19 +155,8 @@ class API(api.API):
                 raise exception.SecurityGroupCannotBeApplied()
             network_id = network['id']
             zone = 'compute:%s' % instance['availability_zone']
-            # -----------------------------------------------------------------
-            # NOTE(rods):
-            # This change and the other below are the only differences between
-            # our custom version and the original icehouse upstream method.
-            # For further information about why we need these changes, please
-            # refer to the 'Server Allocation' section of the README.md file.
-            #
-            # original code:
-            # port_req_body = {'port': {'device_id': instance['uuid'],
-            #                  'device_owner': zone}}
-
-            port_req_body = {'port': {'device_id': instance['uuid']}}
-            # -----------------------------------------------------------------
+            port_req_body = {'port': {'device_id': instance['uuid'],
+                                      'device_owner': zone}}
             try:
                 port = ports.get(network_id)
                 self._populate_neutron_extension_values(context, instance,
@@ -177,10 +168,15 @@ class API(api.API):
                 if port:
                     # ---------------------------------------------------------
                     # NOTE(rods):
-                    # The following two lines are not present in the original
-                    # icehouse upstream method.
-                    if not port['device_owner'].startswith('network:'):
-                        port_req_body['port']['device_owner'] = zone
+                    # The two line below, which are not present in the original
+                    # icehouse upstream method, represent the only difference
+                    # with our custom version. For further information about
+                    # why we need this change, please refer to the
+                    # 'Server Allocation' section of the README.md file.
+                    #
+
+                    if port['device_owner'].startswith('network:'):
+                        port_req_body['port'].pop('device_owner')
                     # ---------------------------------------------------------
                     port_client.update_port(port['id'], port_req_body)
                     touched_port_ids.append(port['id'])
@@ -228,100 +224,175 @@ class API(api.API):
                                           touched_port_ids])
 
     def deallocate_for_instance(self, context, instance, **kwargs):
-        """Deallocate all network resources related to the instance.
-
-        This version differs from super class because it will not delete
-        network owned ports.
-        """
+        """Deallocate all network resources related to the instance."""
         LOG.debug(_('deallocate_for_instance() for %s'),
                   instance['display_name'])
+
+        # NOTE(rods):
+        # The original icehouse upstream method works in this way:
+        #   * get the list of all the ports attached to the server
+        #   * create the list of ids of all the ports
+        #   * get the list of ids of all the ports_to_skip
+        #   * create the list of ids of the ports_to_delete, like
+        #     ports = set(ports) - set(ports_to_skip)
+        #   * use the ids in the lists of port_to_skip and port_to_delete to
+        #     update or delete the related ports
+
+        # As explained in the README.md file in the "Server deallocation"
+        # section, to make the Nova driver able to deal with Akanda routers
+        # deletion, we need to set to an empty string the device_owner
+        # attribute for all those ports_to_delete whose device_owner starts
+        # with the network prefix. This force us to work on list of ports
+        # (not port ids as in the original method) and make some changes to
+        # the logic even for a small change like test the value of an
+        # attribute.
+
+        search_opts = {'device_id': instance['uuid']}
+        neutron = neutronv2.get_client(context)
+        data = neutron.list_ports(**search_opts)
 
         requested_networks = kwargs.get('requested_networks') or {}
         ports_to_skip = [port_id for nets, fips, port_id in requested_networks]
 
-        search_opts = {'device_id': instance['uuid']}
-        data = neutronv2.get_client(context).list_ports(**search_opts)
+        # ---------------------------------------------------------------------
+        # NOTE(rods): Need a list of ports instead of port ids
+        #
+        # original code
+        # ports = [port['id'] for port in data.get('ports', [])]
+        # ports = set(ports) - set(ports_to_skip)
 
-        ports = data.get('ports', [])
+        ports = [port for port in data.get('ports', [])
+                 if port['id'] not in ports_to_skip]
+        # ---------------------------------------------------------------------
+
+        # Reset device_id and device_owner for the ports that are skipped
+        for port in ports_to_skip:
+            port_req_body = {'port': {'device_id': '', 'device_owner': ''}}
+            try:
+                neutronv2.get_client(context).update_port(port,
+                                                          port_req_body)
+            except Exception:
+                LOG.info(_('Unable to reset device ID for port %s'), port,
+                         instance=instance)
 
         for port in ports:
-            if port['id'] in ports_to_skip:
-                continue
             try:
-                # NOTE(rods): The following 'if' statement is the only
-                #             difference with the parent method
-                if port['device_owner'].startswith('network:'):
+                # -------------------------------------------------------------
+                # NOTE(rods): check the value of the device_owner
+                device_owner = port['device_owner']
+                port = port['id']
+                if device_owner.startswith('network:'):
                     body = dict(device_id='')
-                    neutronv2.get_client(context).update_port(
-                        port['id'], dict(port=body))
+                    neutron.update_port(port, dict(port=body))
+                    # ---------------------------------------------------------
                 else:
-                    neutronv2.get_client(context).delete_port(port['id'])
-            except Exception:
-                LOG.exception(_("Failed to delete neutron port %(portid)s")
-                              % {'portid': port['id']})
+                    neutron.delete_port(port)
+            except neutronv2.exceptions.NeutronClientException as e:
+                if e.status_code == 404:
+                    LOG.warning(_("Port %s does not exist"), port)
+                else:
+                    with excutils.save_and_reraise_exception():
+                        LOG.exception(_("Failed to delete neutron port %s"),
+                                      port)
 
-    def _build_network_info_model(self, context, instance,
-                                  networks=None, port_ids=None):
-        """This is a slightly different version than the super.
+        # NOTE(arosen): This clears out the network_cache only if the instance
+        # hasn't already been deleted. This is needed when an instance fails to
+        # launch and is rescheduled onto another compute node. If the instance
+        # has already been deleted this call does nothing.
+        update_instance_info_cache(self, context, instance,
+                                   network_model.NetworkInfo([]))
 
-        Adds support to relax the filters for the service tenant.
-        Workaround the fact that nova doesn't like ipv6 subnet only
+    def _build_network_info_model(self, context, instance, networks=None,
+                                  port_ids=None):
+        """Return list of ordered VIFs attached to instance.
+
+        :param context - request context.
+        :param instance - instance we are returning network info for.
+        :param networks - List of networks being attached to an instance.
+                          If value is None this value will be populated
+                          from the existing cached value.
+        :param port_ids - List of port_ids that are being attached to an
+                          instance in order of attachment. If value is None
+                          this value will be populated from the existing
+                          cached value.
         """
-        search_opts = {'device_id': instance['uuid']}
-        # NOTE(rods): The following "if" statement is not present in the
-        #            parent method.
-        if context.project_name != 'service' or context.user_name != 'neutron':
-            search_opts['tenant_id'] = instance['project_id']
+
+        search_opts = {'tenant_id': instance['project_id'],
+                       'device_id': instance['uuid'], }
+
+        # ---------------------------------------------------------------------
+        # NOTE(rods):
+        # We need to relax the filter as described in the README.md file in
+        # 'Network info model' section
+        # The following lines are not present in the original icehouse
+        # upstream method.
+
+        if (context.project_name == 'service'
+                and context.user_name == 'neutron'):
+            search_opts.pop('tenant_id')
+        # ---------------------------------------------------------------------
 
         client = neutronv2.get_client(context, admin=True)
         data = client.list_ports(**search_opts)
-        ports = data.get('ports', [])
-        if networks is None:
-            # retrieve networks from info_cache to get correct nic order
-            network_cache = self.conductor_api.instance_get_by_uuid(
-                context, instance['uuid'])['info_cache']['network_info']
-            network_cache = jsonutils.loads(network_cache)
-            net_ids = [iface['network']['id'] for iface in network_cache]
-            networks = self._get_available_networks(context,
-                                                    instance['project_id'],
-                                                    net_ids)  # akanda change
 
-        # ensure ports are in preferred network order, and filter out
-        # those not attached to one of the provided list of networks
-        else:
-            net_ids = [n['id'] for n in networks]
-        ports = [port for port in ports if port['network_id'] in net_ids]
-        api._ensure_requested_network_ordering(lambda x: x['network_id'],
-                                               ports, net_ids)
-
+        current_neutron_ports = data.get('ports', [])
+        networks, port_ids = self._gather_port_ids_and_networks(
+            context, instance, networks, port_ids)
         nw_info = network_model.NetworkInfo()
-        for port in ports:
-            network_IPs = self._nw_info_get_ips(client, port)
-            subnets = self._nw_info_get_subnets(context, port, network_IPs)
 
-            # Nova does not like only IPv6, so let's lie and add a fake
-            # link-local IPv4.  Neutron provides DHCP so this is ignored.
-            # NOTE(rods): This workaround is not present in the parent method
-            if not any(ip['version'] == 4 for ip in network_IPs):
-                nova_lie = {
-                    'cidr': '169.254.0.0/16',
-                    'gateway': network_model.IP(address='', type='gateway'),
-                    'ips': [network_model.FixedIP(address='169.254.10.20')]
-                }
-                subnets.append(nova_lie)
+        current_neutron_port_map = {}
+        for current_neutron_port in current_neutron_ports:
+            current_neutron_port_map[current_neutron_port['id']] = (
+                current_neutron_port)
 
-            devname = "tap" + port['id']
-            devname = devname[:network_model.NIC_NAME_LEN]
+        for port_id in port_ids:
+            current_neutron_port = current_neutron_port_map.get(port_id)
+            if current_neutron_port:
+                vif_active = False
+                if (current_neutron_port['admin_state_up'] is False
+                        or current_neutron_port['status'] == 'ACTIVE'):
+                    vif_active = True
 
-            network, ovs_interfaceid = self._nw_info_build_network(port,
-                                                                   networks,
-                                                                   subnets)
+                network_IPs = self._nw_info_get_ips(client,
+                                                    current_neutron_port)
+                subnets = self._nw_info_get_subnets(context,
+                                                    current_neutron_port,
+                                                    network_IPs)
 
-            nw_info.append(network_model.VIF(
-                id=port['id'],
-                address=port['mac_address'],
-                network=network,
-                type=port.get('binding:vif_type'),
-                ovs_interfaceid=ovs_interfaceid,
-                devname=devname))
+                # -------------------------------------------------------------
+                # NOTE(rods):
+                # Nova Havana doesn't like networks with ipv6 subnets only.
+                # The following lines are not present in the original
+                # icehouse upstream method.
+
+                # TODO(rods):
+                # This may not be a problem with subsequent versions of Nova,
+                # we need to test and possibly remove it.
+                if not any(ip['version'] == 4 for ip in network_IPs):
+                    nova_lie = {
+                        'cidr': '169.254.0.0/16',
+                        'gateway': network_model.IP(
+                            address='', type='gateway'),
+                        'ips': [network_model.FixedIP(address='169.254.10.20')]
+                    }
+                    subnets.append(nova_lie)
+                # -------------------------------------------------------------
+
+                devname = "tap" + current_neutron_port['id']
+                devname = devname[:network_model.NIC_NAME_LEN]
+
+                network, ovs_interfaceid = (
+                    self._nw_info_build_network(current_neutron_port,
+                                                networks, subnets))
+
+                nw_info.append(network_model.VIF(
+                    id=current_neutron_port['id'],
+                    address=current_neutron_port['mac_address'],
+                    network=network,
+                    type=current_neutron_port.get('binding:vif_type'),
+                    details=current_neutron_port.get('binding:vif_details'),
+                    ovs_interfaceid=ovs_interfaceid,
+                    devname=devname,
+                    active=vif_active))
+
         return nw_info
