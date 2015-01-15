@@ -18,7 +18,7 @@
 from oslo.config import cfg
 
 from nova import exception
-from nova.network import api as network_api
+from nova.network import base_api
 from nova.network import model as network_model
 from nova.network import neutronv2
 from nova.network.neutronv2 import api
@@ -28,7 +28,7 @@ from nova.openstack.common.gettextutils import _
 CONF = cfg.CONF
 LOG = api.LOG
 
-update_instance_info_cache = network_api.update_instance_cache_with_nw_info
+update_instance_info_cache = base_api.update_instance_cache_with_nw_info
 
 
 class API(api.API):
