@@ -427,7 +427,12 @@ class API(api.API):
                     id=current_neutron_port['id'],
                     address=current_neutron_port['mac_address'],
                     network=network,
+                    vnic_type=current_neutron_port.get(
+                        'binding:vnic_type',
+                        network_model.VNIC_TYPE_NORMAL
+                    ),
                     type=current_neutron_port.get('binding:vif_type'),
+                    profile=current_neutron_port.get('binding:profile'),
                     details=current_neutron_port.get('binding:vif_details'),
                     ovs_interfaceid=ovs_interfaceid,
                     devname=devname,
