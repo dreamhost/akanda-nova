@@ -256,11 +256,9 @@ class API(api.API):
 
     def deallocate_for_instance(self, context, instance, **kwargs):
         """Deallocate all network resources related to the instance."""
-        LOG.debug(_('deallocate_for_instance() for %s'),
-                  instance['display_name'])
 
         # NOTE(rods):
-        # The original icehouse upstream method works in this way:
+        # The original juno upstream method works in this way:
         #   * get the list of all the ports attached to the server
         #   * create the list of ids of all the ports
         #   * get the list of ids of all the ports_to_skip
@@ -278,13 +276,18 @@ class API(api.API):
         # the logic even for a small change like test the value of an
         # attribute.
 
-        search_opts = {'device_id': instance['uuid']}
+        LOG.debug('deallocate_for_instance()', instance=instance)
+        search_opts = {'device_id': instance.uuid}
         neutron = neutronv2.get_client(context)
         data = neutron.list_ports(**search_opts)
+        ports = [port['id'] for port in data.get('ports', [])]
 
-        requested_networks = kwargs.get('requested_networks') or {}
-        ports_to_skip = [port_id for nets, fips, port_id in requested_networks]
-
+        requested_networks = kwargs.get('requested_networks') or []
+        # NOTE(danms): Temporary and transitional
+        if isinstance(requested_networks, objects.NetworkRequestList):
+            requested_networks = requested_networks.as_tuples()
+        ports_to_skip = [port_id for nets, fips, port_id, pci_request_id
+                         in requested_networks]
         # ---------------------------------------------------------------------
         # NOTE(rods): Need a list of ports instead of port ids
         #
@@ -306,32 +309,36 @@ class API(api.API):
                 LOG.info(_('Unable to reset device ID for port %s'), port,
                          instance=instance)
 
+        # ---------------------------------------------------------------------
+        # NOTE(rods): check the value of the device_owner
+        #
+        # original code
+        # self._delete_ports(neutron, instance, ports, raise_if_fail=True)
+
+        # NOTE(rods): Previously we were updating and removing ports in the
+        # same loop. In juno all the delete logic has been moved to
+        # _delete_ports but to avoid to have to override and maintain another
+        # method make sense to keep the update logic here and just pass to
+        # _delete_port a list of port ids.
+
+        ports_to_delete = []
         for port in ports:
-            try:
-                # -------------------------------------------------------------
-                # NOTE(rods): check the value of the device_owner
-                device_owner = port['device_owner']
-                port = port['id']
-                if device_owner.startswith('network:'):
-                    body = dict(device_id='')
-                    neutron.update_port(port, dict(port=body))
-                    # ---------------------------------------------------------
-                else:
-                    neutron.delete_port(port)
-            except neutronv2.exceptions.NeutronClientException as e:
-                if e.status_code == 404:
-                    LOG.warning(_("Port %s does not exist"), port)
-                else:
-                    with excutils.save_and_reraise_exception():
-                        LOG.exception(_("Failed to delete neutron port %s"),
-                                      port)
+            if port['device_owner'].startswith('network:'):
+                body = dict(device_id='')
+                neutron.update_port(port['id'], dict(port=body))
+            else:
+                ports_to_delete.append(port['id'])
+
+        self._delete_ports(neutron, instance, ports_to_delete,
+                           raise_if_fail=True)
+        # ---------------------------------------------------------------------
 
         # NOTE(arosen): This clears out the network_cache only if the instance
         # hasn't already been deleted. This is needed when an instance fails to
         # launch and is rescheduled onto another compute node. If the instance
         # has already been deleted this call does nothing.
-        update_instance_info_cache(self, context, instance,
-                                   network_model.NetworkInfo([]))
+        base_api.update_instance_cache_with_nw_info(
+            self, context, instance, network_model.NetworkInfo([]))
 
     def _build_network_info_model(self, context, instance, networks=None,
                                   port_ids=None):
