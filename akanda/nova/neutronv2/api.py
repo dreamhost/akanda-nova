@@ -107,8 +107,8 @@ class API(api.API):
         # or if it is indirectly called through allocate_port_for_instance()
         # with None params=(network_id=None, requested_ip=None, port_id=None,
         # pci_request_id=None):
-        if (not requested_networks
-                or requested_networks.is_single_unspecified):
+        if (not requested_networks or
+                requested_networks.is_single_unspecified):
             # bug/1267723 - if no network is requested and more
             # than one is available then raise NetworkAmbiguous Exception
             if len(nets) > 1:
@@ -182,8 +182,8 @@ class API(api.API):
             # That is why True is returned if 'port_security_enabled'
             # is not found.
             if (security_groups and not (
-                    network['subnets']
-                    and network.get('port_security_enabled', True))):
+                    network['subnets'] and
+                    network.get('port_security_enabled', True))):
 
                 raise exception.SecurityGroupCannotBeApplied()
             request.network_id = network['id']
@@ -365,8 +365,8 @@ class API(api.API):
         # The following lines are not present in the original icehouse
         # upstream method.
 
-        if (context.project_name == 'service'
-                and context.user_name == 'neutron'):
+        if (context.project_name == 'service' and
+                context.user_name == 'neutron'):
             search_opts.pop('tenant_id')
         # ---------------------------------------------------------------------
 
@@ -387,8 +387,8 @@ class API(api.API):
             current_neutron_port = current_neutron_port_map.get(port_id)
             if current_neutron_port:
                 vif_active = False
-                if (current_neutron_port['admin_state_up'] is False
-                        or current_neutron_port['status'] == 'ACTIVE'):
+                if (current_neutron_port['admin_state_up'] is False or
+                        current_neutron_port['status'] == 'ACTIVE'):
                     vif_active = True
 
                 network_IPs = self._nw_info_get_ips(client,
