@@ -301,6 +301,10 @@ class API(api.API):
 
         # Reset device_id and device_owner for the ports that are skipped
         for port in ports_to_skip:
+            # -------------------------------------------------------------
+            # NOTE(ryanp): if the port already is network:owned, don't reset
+            if port['device_owner'].startswith('network:'):
+                continue
             port_req_body = {'port': {'device_id': '', 'device_owner': ''}}
             try:
                 neutronv2.get_client(context).update_port(port,
