@@ -149,8 +149,8 @@ class API(api.API):
             # That is why True is returned if 'port_security_enabled'
             # is not found.
             if (security_groups and not (
-                    network['subnets']
-                    and network.get('port_security_enabled', True))):
+                    network['subnets'] and
+                    network.get('port_security_enabled', True))):
 
                 raise exception.SecurityGroupCannotBeApplied()
             network_id = network['id']
@@ -331,8 +331,8 @@ class API(api.API):
         # The following lines are not present in the original icehouse
         # upstream method.
 
-        if (context.project_name == 'service'
-                and context.user_name == 'neutron'):
+        if (context.project_name == 'service' and
+                context.user_name == 'neutron'):
             search_opts.pop('tenant_id')
         # ---------------------------------------------------------------------
 
@@ -353,8 +353,8 @@ class API(api.API):
             current_neutron_port = current_neutron_port_map.get(port_id)
             if current_neutron_port:
                 vif_active = False
-                if (current_neutron_port['admin_state_up'] is False
-                        or current_neutron_port['status'] == 'ACTIVE'):
+                if (current_neutron_port['admin_state_up'] is False or
+                        current_neutron_port['status'] == 'ACTIVE'):
                     vif_active = True
 
                 network_IPs = self._nw_info_get_ips(client,
