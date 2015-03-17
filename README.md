@@ -1,6 +1,6 @@
 # Akanda Nova
 
-** Deprecated - This repo is being phased out and is not needed for stable/juno**
+## Deprecated - This repo is being phased out and is not needed for stable/juno ##
 
 *Part of the [Akanda Project](https://github.com/dreamhost/akanda).*
 
